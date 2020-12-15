@@ -337,7 +337,46 @@ def bbox_3d(mask, nodules):
             all_labels_list.append(coord_list)
 
     return all_labels_list
-    
+
+
+def bbox_3d_cube(mask, nodules):
+    """
+    ndarray
+
+    """
+    all_labels_list = []
+    n_cands = int(np.max(mask))
+    rois = np.array([(mask == ii) * 1 for ii in range(1, n_cands + 1)])
+
+    for rix, r in enumerate(rois):
+        if np.sum(r !=0) > 0:
+            seg_ixs = np.argwhere(r != 0)
+            # z, x, y
+            # coord_list = [np.min(seg_ixs[:, 0])-1, 
+            #             np.max(seg_ixs[:, 0])+1,
+            #             np.min(seg_ixs[:, 1])-1, 
+            #             np.max(seg_ixs[:, 1])+1,
+            #             np.min(seg_ixs[:, 2])-1,
+            #             np.max(seg_ixs[:, 2])+1,]
+            z1, z2 = np.min(seg_ixs[:,0]), np.max(seg_ixs[:,0])
+            y1, y2 = np.min(seg_ixs[:,1]), np.max(seg_ixs[:,1])
+            x1, x2 = np.min(seg_ixs[:,2]), np.max(seg_ixs[:,2])
+            z = int((z1 + z2)/2)
+            y = int((y1 + y2)/2)
+            x = int((x1 + x2)/2)
+            dz = z2 - z1
+            dy = y2 - y1
+            dx = x2 - x1
+
+            if nodules[rix] == -1:
+                coord_list = [z, y, x, dz, dy, dx, 5, 1, 1, 1]
+            else:
+                coord_list = [z, y, x, dz, dy, dx, nodules[rix], 1, 1, 1]
+
+            all_labels_list.append(coord_list)
+
+    return all_labels_list
+
 
 def mosaic_generator(pid, lab):
 
@@ -348,8 +387,8 @@ def mosaic_generator(pid, lab):
 
     for i in range(len(lab)):
         # if ((lab[i,3] >= diam_thresh[0]) and (lab[i,3] <= diam_thresh[1]) and (lab[i,4] not in omit_cls) and ((lab[i,5] == 1 ) or (lab[i,5] == 0 and lab[i,4] in [1,2]))):
-        if ((lab[i,3] >= diam_thresh[0]) and (lab[i,3] <= diam_thresh[1]) and (lab[i,4] not in omit_cls) and ((lab[i,5] == 1 ))):    
-            nodule_info.append([pid + '_'+str(i), lab[i,3], lab[i,4]])
+        # if ((lab[i,3] >= diam_thresh[0]) and (lab[i,3] <= diam_thresh[1]) and (lab[i,4] not in omit_cls) and ((lab[i,5] == 1 ))):    
+        nodule_info.append([pid + '_'+str(i), lab[i,3], lab[i,4]])
     
     nodule_info = np.array(nodule_info)
     
@@ -398,7 +437,7 @@ def pp_id(pid, with_rib=False, with_lung=True):
     if len(nodules) > 1: 
         # 去除0
         nodules = nodules[1:]   
-        labels_list = np.array(bbox_3d(mask_arr, nodules))
+        labels_list = np.array(bbox_3d_cube(mask_arr, nodules))
         nodule_info = mosaic_generator(pid, labels_list)
         # print(nodule_info)
         # img & label
@@ -451,16 +490,16 @@ def write_txt(is_train=False):
 if __name__ == "__main__":
     
     root_dir = '/ssd/micca20/'
-    data_dir = '/ssd/micca20/alg_frame_v3'
-    out_dir = '/ssd/micca20/alg_frame_v3/data'
-    lung_dir = '/ssd/ribfrac-train-images_lobe2/'
+    data_dir = '/ssd/micca20/alg_frame_cube'
+    out_dir = '/ssd/micca20/alg_frame_cube/data'
+    lung_dir = '/ssd/ribfrac-val-images_lobe2/'
     if not os.path.exists(out_dir):
         os.mkdir(out_dir)
 
-    label_subdir = os.path.join(root_dir, 'ribfrac-train-labels')
-    img_subdir = os.path.join(root_dir, 'ribfrac-train-images')
+    label_subdir = os.path.join(root_dir, 'ribfrac-val-labels')
+    img_subdir = os.path.join(root_dir, 'ribfrac-val-images')
 
-    info_file = os.path.join(root_dir, 'ribfrac-train-info.csv')
+    info_file = os.path.join(root_dir, 'ribfrac-val-info.csv')
     info_df = pd.read_csv(info_file)
     pids = set(info_df.public_id.values)
     
@@ -472,17 +511,17 @@ if __name__ == "__main__":
     # exit()
 
     # 把肺叶边缘的json转为npy
-    # for i in os.listdir(out_dir):
-    #     if '.json' in i:
-    #         edges_ = []
-    #         with open(os.path.join(out_dir, i), 'r') as f:
-    #             data = json.load(f)
-    #             for z in data:
-    #                 for x, y in data[z]:
-    #                     edges_.append([int(z), x, y])
+    for i in os.listdir(out_dir):
+        if '.json' in i:
+            edges_ = []
+            with open(os.path.join(out_dir, i), 'r') as f:
+                data = json.load(f)
+                for z in data:
+                    for x, y in data[z]:
+                        edges_.append([int(z), x, y])
 
-    #         edges_ = np.array(edges_)
-    #         np.save(os.path.join(out_dir, i.split('.')[0] + '.npy'), edges_)
+            edges_ = np.array(edges_)
+            np.save(os.path.join(out_dir, i.split('.')[0] + '.npy'), edges_)
 
 
 
@@ -500,19 +539,20 @@ if __name__ == "__main__":
 
     # debug
     # for ix, pid in enumerate(pids):
-    #     if ix == 10:
+    #     if ix == 2:
     #         break
-    #     pp_id(pid, with_rib=False)
+    #     pp_id(pid, with_rib=False, with_lung=True)
+
     # pp_id('RibFrac483', with_rib=False)
 
     # mulitprocess pp_patient
-    # pool = Pool(processes=30)
+    # pool = Pool(processes=20)
     # p1 = pool.map(pp_id, pids, chunksize=1)
     # pool.close()
     # pool.join()
 
-    agg_nodule = aggregate_nodule()
-    np.save(os.path.join(out_dir,'nodule_info.npy'), agg_nodule)
+    # agg_nodule = aggregate_nodule()
+    # np.save(os.path.join(out_dir,'nodule_info.npy'), agg_nodule)
 
-    write_txt(is_train=True)
+    # write_txt(is_train=False)
 
