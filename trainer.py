@@ -29,9 +29,9 @@ def neg(x):
 
 def decode_bbox(logits, thresh, idx, config):
     """
-    计算box坐标和置信度
+    计算box坐标和置信度，改换为立方体
     :param logits:
-    :param thresh:
+    :param thresh: not used
     :param idx:
     :param config:
 
@@ -40,7 +40,6 @@ def decode_bbox(logits, thresh, idx, config):
         thresh_list:
 
     """
-
     all_bboxs = []
     all_probs = []
     all_cls = []
@@ -50,7 +49,9 @@ def decode_bbox(logits, thresh, idx, config):
     for level in range(n_level):
         pred_p = logits[n_level*2 - level*2 -2][idx].float()
         pred_d = logits[n_level*2 - level*2 -1][idx].float()
-        pred_d = pred_d.view([4,pred_d.shape[0]//4]+list(pred_d.shape[1:]))
+        # pred_d = pred_d.view([4,pred_d.shape[0]//4]+list(pred_d.shape[1:]))
+        # cube 6个坐标
+        pred_d = pred_d.view([6,pred_d.shape[0]//6]+list(pred_d.shape[1:]))
         stride = torch.tensor(config.rpn['strides'][level]).float().cuda()
         anchors = torch.tensor(config.rpn['anchors'][level])
         if config.classifier['activation'] == 'softmax':
@@ -63,17 +64,20 @@ def decode_bbox(logits, thresh, idx, config):
             top_pred_p, _ = torch.topk(pred_p.reshape([-1]), 1000)
             thresh = -2.0
             thresh_list.append(thresh)
+
             baseline = torch.ones([1]+list(pred_d.shape[1:])).cuda()*thresh
             pred_p = torch.cat([baseline, pred_p], dim=0)
+
         maxp_p, cls_p = torch.max(pred_p, dim=0)
         coords = torch.nonzero(cls_p)
         cls_pos = cls_p[tuple(coords.transpose(0,1))]
         probs = maxp_p[tuple(coords.transpose(0,1))]
         diffs = pred_d[:,coords[:,0],coords[:,1],coords[:,2],coords[:,3]].transpose(0,1)
+        # 对应于哪种类型的anchor
         ancs = anchors[coords[:,0]].unsqueeze(1).float().cuda()
-        #cents = coords[:,1:].float()*stride + diffs[:,:3]*ancs
+        # cents = coords[:,1:].float()*stride + diffs[:,:3]*ancs
         cents = coords[:,1:].float()*stride + diffs[:,:3]
-        #diams = ancs*torch.exp(diffs[:,3:])
+        # diams = ancs*torch.exp(diffs[:,3:])
         diams = diffs[:,3:]
 
         bboxs = torch.cat([cents-diams/2, cents+diams/2], dim=1)
@@ -85,7 +89,7 @@ def decode_bbox(logits, thresh, idx, config):
         all_bboxs = torch.cat(all_bboxs,dim=0)
         all_probs = torch.cat(all_probs,dim=0)
         all_cls = torch.cat(all_cls,dim=0)
-        keep = nms3d(all_bboxs, all_probs, 0.1)
+        keep = nms3d(all_bboxs, all_probs, 0.0)
         bbox_keep = all_bboxs[keep]
         prob_keep = all_probs[keep].unsqueeze(1)
         cls_keep = all_cls[keep].unsqueeze(1).float()
@@ -435,8 +439,6 @@ class Trainer:
 
                     if isFull:
                         data = xbatch
-                        # print(data.shape)
-                        
                         logits = self.warp(data, calc_loss=False)
                         logits = self.clipmargin(list(logits))
 
@@ -475,7 +477,7 @@ class Trainer:
                             if self.emlist is not None:
                                 for em_fun in self.emlist:
                                     # 计算所有预测框的hit情况
-                                    # fulllab: 所有gt box [n, 8] [z,y,x,d,cls,1,1,1]
+                                    # fulllab: 所有gt box [n, 10] [z,y,x,dz,dy,dx,cls,1,1,1]
                                     # iou == 0.2
                                     em_result, iou_info = em_fun(comb_pred, fullab)
                                     # print(em_result)
@@ -572,34 +574,37 @@ class Trainer:
 
         rp_list = []
         # do with small & big box
-        for ap_bbox_list, ap_gt_bbox_count in zip([ap_small_bbox_list, ap_big_bbox_list], \
-                                                  [ap_small_gt_bbox_count, ap_big_gt_bbox_count]):
-            recall_level = 1
-            rp = {}
+        # for ap_bbox_list, ap_gt_bbox_count in zip([ap_small_bbox_list, ap_big_bbox_list], \
+        #                                           [ap_small_gt_bbox_count, ap_big_gt_bbox_count]):
+        ap_bbox_list = ap_big_bbox_list
+        ap_gt_bbox_count = ap_big_gt_bbox_count
+        recall_level = 1
+        rp = {}
 
-            # 按照prob排序
-            # ap_bbox_list: [prob, id_cls, size]
-            ap_bbox_list.sort(key=lambda x: -x[0])
-            gt_bbox_hits = []
-            pred_bbox_hit_count = 0
-            for idx, ap_bbox in enumerate(ap_bbox_list):
-                bbox_tag = ap_bbox[1]
-                if not bbox_tag.endswith('-1'):
-                    pred_bbox_hit_count += 1
-                    # 如果有-1的框，会多记入一个
-                    if bbox_tag not in gt_bbox_hits:
-                        gt_bbox_hits.append(bbox_tag)
-                while len(gt_bbox_hits) / ap_gt_bbox_count >= recall_level*0.1 and recall_level <= 10:
-                    rp[recall_level] = [pred_bbox_hit_count / (idx + 1), ap_bbox[0]]
-                    recall_level += 1
-            rp_list.append(rp)
+        # 按照prob排序
+        # ap_bbox_list: [prob, id_cls, size]
+        ap_bbox_list.sort(key=lambda x: -x[0])
+        gt_bbox_hits = []
+        pred_bbox_hit_count = 0
+        for idx, ap_bbox in enumerate(ap_bbox_list):
+            bbox_tag = ap_bbox[1]
+            if not bbox_tag.endswith('-1'):
+                pred_bbox_hit_count += 1
+                # 如果有-1的框，会多记入一个
+                if bbox_tag not in gt_bbox_hits:
+                    gt_bbox_hits.append(bbox_tag)
+            while len(gt_bbox_hits) / ap_gt_bbox_count >= recall_level*0.1 and recall_level <= 10:
+                rp[recall_level] = [pred_bbox_hit_count / (idx + 1), ap_bbox[0]]
+                recall_level += 1
+        rp_list.append(rp)
 
         if self.emlist is not None:
             em_list = em_avg.val()
         endt = time.time()
         self.writeLossLog('Val', epoch, meanloss = 0, loss_list = [], em_list=em_list, time=(endt-startt)/60)
-        self.printf('small: ' + str(rp_list[0]))
-        self.printf('big: ' + str(rp_list[1]))
+        # self.printf('small: ' + str(rp_list[0]))
+        # self.printf('big: ' + str(rp_list[1]))
+        self.printf('big: ' + str(rp_list))
 
     
     def froc(self, bbox_info, gt_count, fps, n_ct):

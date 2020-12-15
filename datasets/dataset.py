@@ -11,7 +11,8 @@ from .split_combine import SplitComb, mypad
 
 from skimage.transform import rotate as rotate2d
 
-from .label_map2_2 import Label_mapping2 as Label_mapping
+from .label_map_cube import Label_mapping_cube as Label_mapping
+# from .label_map2_2 import Label_mapping2 as Label_mapping
 # from label_map2_2 import Label_mapping2 as Label_mapping
 
 import warnings
@@ -57,7 +58,8 @@ class myDataset(Dataset):
         #self.img_buffers = {item: np.load(item)[np.newaxis] for item in self.img_files[:2000]}
         
         self.label_maper = Label_mapping(config)
-        self.crop = Crop_lung(config)
+        # self.crop = Crop_lung(config)
+        self.crop = Crop(config)
         self.lab_N = config.rpn['N_prob']
         self.size_lim = config.rpn['diam_thresh']
         self.omit_cls = config.classifier['omit_cls']
@@ -117,7 +119,7 @@ class myDataset(Dataset):
 
         if self.phase == 'train':
             img = np.load(self.img_files[idx])
-            img = img.astype(np.int16)
+            img = img.astype(np.int16) # transfer to int16
             
             if self.config.prepare['noise']==True:
                 noise = self.config.prepare['noise_amp']*np.random.randn(img.shape[0],img.shape[1],img.shape[2])
@@ -155,7 +157,8 @@ class myDataset(Dataset):
             # 无masonic aug，crop & flip
             # if np.random.rand() < self.config.prepare['P_random'] or self.config.prepare['mosaic'] == False:
             if self.config.prepare['mosaic'] == False:
-                crop_img, crop_lab = self.crop(img, lab, left_lung_raw, right_lung_raw, debug)
+                # crop_img, crop_lab = self.crop(img, lab, left_lung_raw, right_lung_raw, debug)
+                crop_img, crop_lab = self.crop(img, lab, debug)
                 crop_img, crop_lab = augment(crop_img, crop_lab, self.config.augtype)
 
             # masonic flip
@@ -329,7 +332,7 @@ class myDataset(Dataset):
             # lab = np.array([item for item in lab_raw if item[4] not in [6,7]])
             lab = lab_raw
 
-            # nswh: 图片pad前后的shape
+            # crop_img, 一个case中所有的crop小块
             crop_img, nswh = self.split_comb.split(img)
             crop_img = self.__lum_trans__(crop_img)
 
@@ -443,7 +446,8 @@ class Crop(object):
 
         # 计算label中所有的roi
         if lab_idx == None:
-            valid_lab = np.array([l for l in lab if ((l[3] >= self.size_lim[0]) and (l[3] <= self.size_lim[1]) and (l[4] not in self.omit_cls) and ((l[5] == 1 ) or (l[5] == 0 and l[4] in [1,2])))])
+            # valid_lab = np.array([l for l in lab if ((l[3] >= self.size_lim[0]) and (l[3] <= self.size_lim[1]) and (l[4] not in self.omit_cls) and ((l[5] == 1 ) or (l[5] == 0 and l[4] in [1,2])))])
+            valid_lab = lab
             if (np.random.rand() < self.P_random) or (len(valid_lab)==0):
                 # 随机选取-起始点
                 start = [start_fn(-b, s + b - c) for s, c, b in zip(shape, step2_size, margin)]
@@ -457,7 +461,7 @@ class Crop(object):
                         s_idx = 1
                     else:
                         s_idx = 2
-                    diams.append((self.sample_factor[s_idx])*self.mul_factor[int(l[4])])
+                    diams.append((self.sample_factor[s_idx])*self.mul_factor[int(l[6])])
                 diams = np.array(diams)
                 bb = valid_lab[np.random.choice(len(valid_lab),p=diams/np.sum(diams))]
                 # print(bb)
@@ -470,8 +474,8 @@ class Crop(object):
             bb = lab[lab_idx]
             # print(bb)
             # print(shape, step2_size, margin, bb[:3])
-            low = [np.max([a+bb[3]/2+b-c,-b]) for s,c,b,a in zip(shape, step2_size, margin, bb[:3])]
-            high = [np.min([a-bb[3]/2-b,s+b-c]) for s,c,b,a in zip(shape, step2_size, margin, bb[:3])]
+            low = [np.max([a+bb[3:6]/2+b-c,-b]) for s,c,b,a in zip(shape, step2_size, margin, bb[:3])]
+            high = [np.min([a-bb[3:6]/2-b,s+b-c]) for s,c,b,a in zip(shape, step2_size, margin, bb[:3])]
             # print(low,high)
             start = [start_fn(l,h) if l<=h else int(a-c/2)   for l,h,a,c in zip(low,high, bb[:3], step2_size)]
             # print(start)
@@ -590,6 +594,7 @@ class Crop_lung(object):
     def __call__(self, im, lab, left_edge, right_edge, fix_size=None, lab_idx=None, debug=False):
         """
         每次随机裁剪出一个小块，以一定概率在（骨折，肺叶外围，随机）处取样
+        crop不会影响立方体的边长，只影响立方体的中心位置，与正方体一样，无需改动
 
         :param im -> ndarray([1, 160, 160, 160]): 3d图 
         :param lab -> ndarray([n, 8]): 标签
@@ -651,7 +656,8 @@ class Crop_lung(object):
 
         # 计算label中所有的roi
         if lab_idx == None:
-            valid_lab = np.array([l for l in lab if ((l[3] >= self.size_lim[0]) and (l[3] <= self.size_lim[1]) and (l[4] not in self.omit_cls) and ((l[5] == 1 ) or (l[5] == 0 and l[4] in [1,2])))])
+            valid_lab = np.array([l for l in lab])
+            # valid_lab = np.array([l for l in lab if ((l[3] >= self.size_lim[0]) and (l[3] <= self.size_lim[1]) and (l[4] not in self.omit_cls) and ((l[5] == 1 ) or (l[5] == 0 and l[4] in [1,2])))])
             a_rand = np.random.rand()
             if (a_rand < self.P_random[0]) or (len(valid_lab)==0):
                 # 随机选取-起始点
@@ -666,7 +672,8 @@ class Crop_lung(object):
                         s_idx = 1
                     else:
                         s_idx = 2
-                    diams.append((self.sample_factor[s_idx])*self.mul_factor[int(l[4])])
+                    # diams.append((self.sample_factor[s_idx])*self.mul_factor[int(l[4])])
+                    diams.append((self.sample_factor[s_idx])*self.mul_factor[int(l[6])])
                 diams = np.array(diams)
                 bb = valid_lab[np.random.choice(len(valid_lab),p=diams/np.sum(diams))]
                 # print(bb)
@@ -800,6 +807,10 @@ class Crop_lung(object):
 
 
 def augment(im, lab, augtype):
+    """
+    同理，flip不会影响矩形的边长
+    
+    """
     t = time.time()
     np.random.seed(int(str(t % 1)[2:7]))  # seed according to time
     if augtype['flip']:

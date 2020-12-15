@@ -281,6 +281,10 @@ class Focal_loss_ignoreneg_max_pos(nn.Module):
         self.nms = nms
 
     def forward(self, output, fpn_prob,fpn_coord,fpn_connects=None):
+        """
+        用于分类
+        
+        """
         # 
         cls_loss_neg = torch.zeros(1,device=output[0].device)
         
@@ -1290,6 +1294,12 @@ class Bbox_loss(nn.Module):
         self.lossfun = lossfun
 
     def forward(self, output, fpn_coord, fpn_diff):
+        """
+        修改为立方体的reg loss
+        :param output: 网络输出
+        :param fpn_coord: 计算reg loss所在的anchor的位置
+        :param fpn_diff: anchor和gt的diff
+        """
         reg_loss = torch.zeros(1,device=output[0].device)
         reg_weight = torch.zeros(1,device=output[0].device)
         N_level = len(fpn_diff)
@@ -1297,7 +1307,7 @@ class Bbox_loss(nn.Module):
             diff_pred = output[level*2+1]
             coord_gt = fpn_coord[N_level-1-level]
             diff_gt = fpn_diff[N_level-1-level].cuda().float()
-            diff_pred = diff_pred.view([diff_pred.shape[0],4, diff_pred.shape[1]//4,
+            diff_pred = diff_pred.view([diff_pred.shape[0],6, diff_pred.shape[1]//6,
                                         diff_pred.shape[2],diff_pred.shape[3], diff_pred.shape[4]])
 
             for d_pred, c_gt, d_gt in zip(diff_pred, coord_gt, diff_gt):
@@ -1419,6 +1429,12 @@ class Loss_comb2(nn.Module):
         return tensors
 
     def forward(self, output, fpn_prob, fpn_coord_prob, fpn_coord_diff, fpn_diff, fpn_connects=None, fnames=None):
+        """
+        
+        Return: list()
+            loss: 
+            weight: 
+        """
         output = self.clipmargin(list(output))
 
         loss1, weight1 = self.focal(output, fpn_prob, fpn_coord_prob, fpn_connects)
@@ -1509,9 +1525,9 @@ class Loss_comb13_ignoreneg(Loss_comb2):
         
 class Loss_comb13_ignoreneg_max_pos(Loss_comb2):
     def __init__(self,config):
-        super().__init__(config, lamb1=1.5, lamb2=0.1)
+        super().__init__(config, lamb1=1, lamb2=0.2)
         """
-        :param lamb1: 负样本在loss中权重
+        :param lamb1: 负样本在loss中权重，正样本以及和负样本取了平均
         :param lamb2: 框的回归loss
         """
         self.lbbox = Bbox_loss(smooth_l1_loss)
@@ -1755,13 +1771,14 @@ def cal_distance(p1, p2):
 def cent2border(bbox_list):
     """
     box的中心坐标形式，转为边界表示
-    :param bbox_list: [z, y, x, d, cls, 1, 1, 1]
+    :param bbox_list: [z, y, x, dz, dy, dx, cls, 1, 1, 1]
     2 > 1
 
     return: [z1, y1, x1, z2, y2, x2, 1, cls+1]
     """
     if len(bbox_list)>0:
-        return torch.cat([bbox_list[:,:3]-bbox_list[:,3:4]/2, bbox_list[:,:3]+bbox_list[:,3:4]/2, bbox_list[:,5:6], bbox_list[:,4:5]+1], dim=1).float().cpu().numpy()
+        return torch.cat([bbox_list[:,:3] - bbox_list[:,3:6]/2, bbox_list[:,:3] + bbox_list[:,3:6]/2, bbox_list[:,7:8], bbox_list[:,6:7]+1], dim=1).float().cpu().numpy()
+        # return torch.cat([bbox_list[:,:3]-bbox_list[:,3:4]/2, bbox_list[:,:3]+bbox_list[:,3:4]/2, bbox_list[:,5:6], bbox_list[:,4:5]+1], dim=1).float().cpu().numpy()
     else:
         return []
 
@@ -1769,16 +1786,17 @@ class em(nn.Module):
     def __init__(self,config):
         super().__init__()
         # miccai-2020, iou >= 0.2
-        self.iou_thresh = 0.5
+        self.iou_thresh = 0.1
         self.sizelim = config.rpn['diam_thresh']
         self.small_size = config.rpn['small_size']
         self.omit_cls = config.classifier['omit_cls']
 
     def forward(self,bbox_pred,bbox_label):
         """
+        更改为适应立方体的计算方式
         根据bbox和gt计算tp，fp，命中规则：pred和label的iou大于iou_thresh
         :param bbox_pred: 预测框 [z1, y1, x1, z2, y2, x2, confidence, cls]
-        :param bbox_label: gt [z, y, x, d, cls, 1, 1, 1]
+        :param bbox_label: gt [z, y, x, dz, dy, dx, cls, 1, 1, 1]
         
         """
 

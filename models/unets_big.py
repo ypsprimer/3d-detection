@@ -577,8 +577,10 @@ class fpn_big(unet_type3):
         # 每种scale下anchor的数量
         n_anchors = [len(a) for a in config.rpn['anchors']]
         n_pred_p = [a*N_cls for a in n_anchors]
-        n_pred_d = [a*4 for a in n_anchors]
+        # 改为6个输出，立方体
+        n_pred_d = [a*6 for a in n_anchors]
         dropout_ratio = config.net['dropout']
+        
         super().__init__(n_inp = n_inp, feats = [32, 32, 64, 64, 128, 128, 128], abn = abn, n_pred_p= n_pred_p, n_pred_d=n_pred_d, L_output=L_output, dropout_ratio=dropout_ratio)
 
 # bn sync

@@ -11,8 +11,8 @@ from .split_combine import SplitComb, mypad
 
 from skimage.transform import rotate as rotate2d
 
-# from .label_map_cube import Label_mapping_cube as Label_mapping
-from .label_map2_2 import Label_mapping2 as Label_mapping
+from .label_map_cube import Label_mapping_cube as Label_mapping
+# from .label_map2_2 import Label_mapping2 as Label_mapping
 # from label_map2_2 import Label_mapping2 as Label_mapping
 
 import warnings
@@ -58,7 +58,7 @@ class myDataset(Dataset):
         #self.img_buffers = {item: np.load(item)[np.newaxis] for item in self.img_files[:2000]}
         
         self.label_maper = Label_mapping(config)
-        self.crop = Crop_lung(config)
+        self.crop = Crop(config)
         self.lab_N = config.rpn['N_prob']
         self.size_lim = config.rpn['diam_thresh']
         self.omit_cls = config.classifier['omit_cls']
@@ -387,7 +387,7 @@ class Crop(object):
         每次随机裁剪出一个小块，
 
         :param im -> ndarray([1, 160, 160, 160]): 3d图 
-        :param lab -> ndarray([n,8]): 标签
+        :param lab -> ndarray([n,10]): 标签 z,y,x,dz,dy,dx,cls,1,1,1
         :param lab_idx: 通过id指定lab中的一个roi, 用于debug
         :param fix_size: 
         :param debug: 

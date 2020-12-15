@@ -18,6 +18,10 @@ class warpLoss(nn.Module):
         self.emlist = emlist
         self.margin = margin
     def forward(self, x, *args, calc_loss=True):
+        """
+        可选择不计算loss，只输出网络结果
+        
+        """
         logit = self.net(x)
         # print(logit[0].shape)
         # print(args[0][0].shape)

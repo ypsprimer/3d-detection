@@ -1,8 +1,13 @@
 import numpy as np
 
-class Label_mapping2():
-    # 为 FPN 产生label
-
+class Label_mapping_cube():
+    """
+    产生合法的anchor，label和回归系数
+    >>>
+    正方体 --> 立方体
+    z, y, x, d (z, y, x为中心坐标) --> z, y, x, dz, dy, dx (z, y, x为中心坐标，dz为边长)
+    
+    """
     def __init__(self, config):
         self.anchors = config.rpn['anchors'] # anchor 的列表，[[1,2],[3]]表示第一个输出层两个anchor， 第二个输出层一个anchor
         self.stride_levels = config.rpn['strides']   # 各个输出层的stride 列表， 例如 [[1,1,1], [2,2,2]] 代表两个输出层的stride 分别是1，2，各向同性的
@@ -27,13 +32,13 @@ class Label_mapping2():
             self.bbox_size_range = config.rpn['bbox_size_range']
         print('omit cls: ',self.omit_cls)
     @staticmethod
-    def one_axis( anc, center, radius, stride, lim):
+    def one_axis( anc, center, side, stride, lim):
         """
         计算某一个方向下 x/y/z，bbox是否在crop区域中，以及是否和gt是否有交集，取和gt有交集，并且在crop区域中的anchor
 
         :param anc: anchor
         :param center: bbox的中心坐标，x/y/z中的一个
-        :param radius: bbox的直径
+        :param side: bbox的边长的一半，x/y/z中的一个
         :param stride: level下的步长
         :param lim: 被margin限制后的一个level下的特征图大小
 
@@ -45,8 +50,8 @@ class Label_mapping2():
             end_s: 在stride level下最后一个与gt相交的anchor的位置
         """
 
-        start_s = int(np.floor((center-radius-anc/2)/stride))
-        end_s = int(np.ceil((center+radius + anc/2)/stride))
+        start_s = int(np.floor((center - side - anc/2)/stride))
+        end_s = int(np.ceil((center + side + anc/2)/stride))
         # 判断bbox的范围是否超过了被crop的区域范围，超出直接被丢弃
         if end_s<=0 or start_s>=lim:
             return False, None,None,None,None
@@ -60,12 +65,12 @@ class Label_mapping2():
 
         x = np.arange(start, end, stride)# 生成坐标轴，数值是原图上的坐标
         left1 = x-anc/2 # 每个点所对应的anchor 的左边界
-        left2 = center-radius # 答案框的左边界
+        left2 = center-side # 答案框的左边界
         left_border = left1.copy()
         left_border[left_border<left2] = left2 # 两者左边界的右边那一个
 
         right1 = x+anc/2
-        right2 = center+radius
+        right2 = center+side
         right_border = right1.copy()
         right_border[right_border>right2] = right2# 两者右边界的左边那一个
 
@@ -85,14 +90,17 @@ class Label_mapping2():
 
     def quantize(self, iou, omit, train_flag, cls=0, iou_neg_idx = 0, use_pos=False):
         """
-        根据iou排序，生成不同区域的pos/neg anchor，pos记为1，neg记为-1
+        根据iou排序，生成不同区域的pos/neg anchor，pos记为1，neg记为-1，中性记为0，
         :praram train_flag = 1
         """
-        # prob和coord，原始全部置为-1
+        # 原始的所有anchor，原始全部置为0，全部为中性样本
         results_prob = np.ones_like(iou)*self.lab_neut
-        results_prob[iou<self.iou_neg[iou_neg_idx]] = self.lab_neg
+        results_prob[iou<self.iou_neg[iou_neg_idx]] = self.lab_neg # 小于iou_neg的才记为-1，负样本
+
+        # 只计算reg loss的部分anchor，初始置为0，全部为中性样本
         results_coord = np.ones_like(iou)*self.lab_neut
         results_coord[iou<self.iou_neg[iou_neg_idx]] = self.lab_neg
+
         # 不使用最大概率进行训练，按照样本数量训练
         if not self.max_pos:
             if (not omit) and use_pos:
@@ -102,8 +110,9 @@ class Label_mapping2():
                 # 选取N_prob数量的anchor来训练，根据iou的大小排序
                 dy_iou_pos = min(max(self.iou_pos, iou_sort[min(self.N_prob, len(iou_sort)-1)]), iou_sort[0])
                 iou_pos_bin = iou>=dy_iou_pos
-                results_coord[iou_pos_bin] = train_flag
-                results_prob[iou_pos_bin] = cls + 1 # 正样本label = 1
+                results_coord[iou_pos_bin] = train_flag # 1
+                # results_prob[iou_pos_bin] = cls + 1 # 正样本label = 1
+                results_prob[iou_pos_bin] = cls
                     
         else:
             if (not omit) and use_pos:
@@ -112,7 +121,8 @@ class Label_mapping2():
                 max_idx = np.unravel_index(iou.argmax(), iou.shape)
                 max_iou = iou[tuple(max_idx)]
                 if max_iou>=self.iou_pos:
-                    results_prob[tuple(max_idx)] = cls + 1
+                    # results_prob[tuple(max_idx)] = cls + 1
+                    results_prob[tuple(max_idx)] = cls
                     results_coord[tuple(max_idx)] = train_flag
         #results[np.logical_and(iou<self.iou_pos, iou>=self.iou_neg)]=0
         
@@ -124,8 +134,8 @@ class Label_mapping2():
         :param bboxs: 原始框，
         :param target_shape: 
         :param anchor: 
-        :param gt_prob: anchor的label pos/neg
-        :param gt_coord_only: pos用于reg的
+        :param gt_prob: anchor的label pos/neg，初始全部为-1
+        :param gt_coord_only: pos用于reg的，初始全部为-1
         :param gt_diff: x，y，z，d(log回归)
         :param gt_connects: 每个box不同的anchor
         
@@ -148,26 +158,26 @@ class Label_mapping2():
             # in_x：是否在crop中，
             # sx/ex：在crop中，在level大小下，与gt有交集第一个和最后一个anchor的位置
             in_x, over_x, diffx, sx, ex = self.one_axis(anchor/spacing[0], box[0], box[3]/2/spacing[0], stride[0], target_shape[0])
-            in_y, over_y, diffy, sy, ey = self.one_axis(anchor/spacing[1], box[1], box[3]/2/spacing[1], stride[1], target_shape[1])
-            in_z, over_z, diffz, sz, ez = self.one_axis(anchor/spacing[2], box[2], box[3]/2/spacing[2], stride[2], target_shape[2])
+            in_y, over_y, diffy, sy, ey = self.one_axis(anchor/spacing[1], box[1], box[4]/2/spacing[1], stride[1], target_shape[1])
+            in_z, over_z, diffz, sz, ez = self.one_axis(anchor/spacing[2], box[2], box[5]/2/spacing[2], stride[2], target_shape[2])
             
             if in_x and in_y and in_z:
                 #overlap = over_x[:,None,None]*over_y[None,:,None]*over_z[None,None,:]
                 #iou = overlap/(anchor**3+(box[3]**3)-overlap)
+                
+                # iou = (1 - np.minimum(np.abs((diffx[:,None,None]*(anchor/spacing[0]))/(box[3]/2/spacing[0])), 1)) \
+                #       *(1 - np.minimum(np.abs((diffy[None,:,None]*(anchor/spacing[1]))/(box[4]/2/spacing[1])), 1))\
+                #       *(1 - np.minimum(np.abs((diffz[None,None,:]*(anchor/spacing[2]))/(box[5]/2/spacing[2])), 1))
 
-                iou = (1 - np.minimum(np.abs((diffx[:,None,None]*(anchor/spacing[0]))/(box[3]/2/spacing[0])), 1)) \
-                      *(1 - np.minimum(np.abs((diffy[None,:,None]*(anchor/spacing[1]))/(box[3]/2/spacing[1])), 1))\
-                      *(1 - np.minimum(np.abs((diffz[None,None,:]*(anchor/spacing[2]))/(box[3]/2/spacing[2])), 1))
-
-                '''
+                
                 diff_all = np.sqrt(np.power(diffx[:,None,None]*(anchor/spacing[0]), 2) \
                       + np.power(diffy[None,:,None]*(anchor/spacing[1]), 2) \
                       + np.power(diffz[None,None,:]*(anchor/spacing[2]), 2))
                 radiu = np.sqrt(np.power(box[3]/2/spacing[0], 2) \
-                                + np.power(box[3]/2/spacing[1], 2) \
-                                + np.power(box[3]/2/spacing[2], 2)) / np.sqrt(3)
+                                + np.power(box[4]/2/spacing[1], 2) \
+                                + np.power(box[5]/2/spacing[2], 2)) / np.sqrt(3)
                 iou = np.maximum((radiu - diff_all) / radiu, 0)
-                '''
+                
 
                 if np.max(iou) <= self.iou_neg[iou_neg_idx]:
                     continue
@@ -178,9 +188,11 @@ class Label_mapping2():
                 # 是否要忽略这个物体，条件有两个，第一是直径要在给定范围内，第二是置信度要高
                 # 如果确定要忽略这个物体，这个物体不会参与概率训练，omit=True，但是仍然会参加bbox 回归训练
 
-                omit =  (box[3] < self.diam_thresh[0]) or (box[3] > self.diam_thresh[1]) or (box[5] != 1 and box[4] == 0) or (box[4] in self.omit_cls)
+                # omit =  (box[3] < self.diam_thresh[0]) or (box[3] > self.diam_thresh[1]) or (box[5] != 1 and box[4] == 0) or (box[4] in self.omit_cls)
+                omit = (box[3] < self.diam_thresh[0]) or (box[3] > self.diam_thresh[1]) or (box[7] != 1 and box[6] == 0) or (box[6] in self.omit_cls)
                 if not omit:
                     hit_boxs.append(box)
+
                 use_pos = (box[3] >= self.bbox_size_range[i_level][0] and box[3] < self.bbox_size_range[i_level][1])
                 # print(i_level)
                 # not used
@@ -192,7 +204,7 @@ class Label_mapping2():
                 elif self.cls_type=='ssd':
                     new_clip, new_clip_coord = self.quantize(iou, omit, box[6], cls=box[4], iou_neg_idx=iou_neg_idx, use_pos=use_pos)
 
-                # 被改动后的（pos anchor所在位置）
+                # 被改动后的（pos anchor和中性样本所在位置）
                 overwrite_mask =  old_clip < new_clip
                 old_clip[overwrite_mask] = new_clip[overwrite_mask]
                 gt_prob[i_anchor,sx:ex,sy:ey,sz:ez] = old_clip
@@ -204,6 +216,7 @@ class Label_mapping2():
                 gt_connect_old_clip[overwrite_mask_connect] = gt_connect_new_clip[overwrite_mask_connect]
                 gt_connects[i_anchor,sx:ex,sy:ey,sz:ez] = gt_connect_old_clip
                 
+                # -1: neg, 0: quit, 1: pos
                 overwrite_mask_coord =  old_clip_coord < new_clip_coord
                 old_clip_coord[overwrite_mask_coord] = new_clip_coord[overwrite_mask_coord]
                 gt_coord_only[i_anchor,sx:ex,sy:ey,sz:ez] = old_clip_coord  
@@ -212,8 +225,13 @@ class Label_mapping2():
                 newdiff = np.array(np.meshgrid(diffx*anchor,diffy*anchor,diffz*anchor,indexing='ij'))
                 old_diff = gt_diff[i_anchor,:,sx:ex,sy:ey,sz:ez]
                 old_diff[:3,overwrite_mask_coord] = newdiff[:,overwrite_mask_coord]
-                #old_diff[3,overwrite_mask_coord] = np.log(box[3]/anchor)
+                # old_diff[3,overwrite_mask_coord] = np.log(box[3]/anchor)
+                # old_diff[4,overwrite_mask_coord] = np.log(box[4]/anchor)
+                # old_diff[5,overwrite_mask_coord] = np.log(box[5]/anchor)
                 old_diff[3,overwrite_mask_coord] = box[3]
+                old_diff[4,overwrite_mask_coord] = box[4]
+                old_diff[5,overwrite_mask_coord] = box[5]
+                # old_diff[3,overwrite_mask_coord] = box[3]
                 gt_diff[i_anchor,:,sx:ex,sy:ey,sz:ez] = old_diff
 
                 gt_coord_prob = np.array(np.where((gt_coord_only==self.lab_probpos)|(gt_coord_only==self.lab_probdiffpos))).T
@@ -227,9 +245,10 @@ class Label_mapping2():
     def pad(self,gt_coord, N_target, other=None):
         if len(gt_coord) <N_target:
             tmp = np.ones([N_target-len(gt_coord),4],dtype=np.long)*-1
+            tmp_diff = np.ones([N_target-len(gt_coord),6],dtype=np.long)*-1
             gt_coord = np.concatenate([gt_coord, tmp], axis=0)
             if other is not None:
-                other =  np.concatenate([other, tmp.astype('float32')], axis=0)
+                other =  np.concatenate([other, tmp_diff.astype('float32')], axis=0)
         elif len(gt_coord)>N_target:
             sampled = np.random.choice(np.arange(len(gt_coord)),N_target,replace=False)
             gt_coord = gt_coord[sampled,:]
@@ -270,7 +289,7 @@ class Label_mapping2():
             # gt_diff: 
             # gt_connects: 
             gt_coord_only = np.ones([len(anchors)*1]+list(target_shape))*self.lab_neg
-            gt_diff = np.zeros([len(anchors), 4]+list(target_shape))
+            gt_diff = np.zeros([len(anchors), 6]+list(target_shape))
             gt_connects = np.zeros_like(gt_prob)
 
             for i_anchor, anchor in enumerate(anchors):
@@ -279,19 +298,33 @@ class Label_mapping2():
             gt_coord_prob = np.array(np.where((gt_coord_only==self.lab_probpos)|(gt_coord_only==self.lab_probdiffpos))).T
             gt_coord_diff = np.array(np.where((gt_coord_only==self.lab_diffpos)|(gt_coord_only==self.lab_probdiffpos))).T
             diffs = gt_diff[gt_coord_diff[:,0],:,gt_coord_diff[:,1],gt_coord_diff[:,2], gt_coord_diff[:,3]]
+            # print(gt_diff.shape)
+            # print(diffs.shape)
+            # exit()
+            # print('-' * 10)
+            # print(diffs)
+            # print(bboxs)
             #if len(hit_boxs) > 0:
             #    print(level_idx, np.array(hit_boxs)[:,3], len(gt_coord_prob))
             #else:
             #    print(level_idx, [], 0)
+
+            # pad以获取相同大小形状的网络tensor
             gt_coord_prob,_ = self.pad(gt_coord_prob, self.N_prob)
             gt_coord_diff, diffs = self.pad(gt_coord_diff, self.N_regress, diffs)
+            # print(diffs.shape)
             gt_prob_fpn.append(gt_prob)
             gt_connects_fpn.append(gt_connects)
             gt_diff_fpn.append(diffs)
             gt_coord_prob_fpn.append(gt_coord_prob)
             gt_coord_diff_fpn.append(gt_coord_diff)
+            # exit()
         return gt_prob_fpn, gt_coord_prob_fpn, gt_coord_diff_fpn, gt_diff_fpn, gt_connects_fpn
                 # print(gt_prob.shape, gt_diff.shape)
                 # ipv.figure()
                 # ipv.plot_isosurface(gt_prob[0]>=1, extent=[[0,gt_prob.shape[1]],[0,gt_prob.shape[2]],[0,gt_prob.shape[3]]] )
                 # ipv.show()
+
+
+if __name__ == "__main__":
+    pass
